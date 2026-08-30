@@ -1,0 +1,74 @@
+/* ===========================================================================
+   KAM CRM v3 - additions to styles.css
+   Append this file to frontend/src/styles.css (or import it after it).
+   Nothing here overrides an existing v2 rule; it only adds the classes the
+   new components use.
+   =========================================================================== */
+
+/* Big KPI card for the three Achievement % headline numbers. */
+.kpi.kpi-big { grid-column: span 2; }
+.kpi.kpi-big .kpi-value { font-size: 34px; }
+@media (max-width: 900px) { .kpi.kpi-big { grid-column: span 1; } }
+
+/* Dense KPI row for the aging cards (8 across on a wide screen). */
+.kpi-grid.kpi-dense { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 9px; }
+.kpi-grid.kpi-dense .kpi { padding: 12px 10px; }
+.kpi-grid.kpi-dense .kpi-label { font-size: 10px; line-height: 1.3; min-height: 26px; }
+.kpi-grid.kpi-dense .kpi-value { font-size: 20px; }
+
+/* Panel header with a control group on the right. */
+.panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.panel-head h2 { margin: 0; }
+
+/* Filter toolbar. */
+.toolbar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 6px 0 12px;
+}
+.toolbar label { font-size: 12px; color: var(--muted, #6b7280); }
+.toolbar input, .toolbar select { margin-left: 6px; }
+
+/* Segmented control. */
+.seg { display: inline-flex; border: 1px solid var(--line, #dfe3ea); border-radius: 8px; overflow: hidden; }
+.seg button {
+  background: transparent; border: none; padding: 7px 13px;
+  font: inherit; font-size: 12.5px; cursor: pointer; color: var(--muted, #6b7280);
+}
+.seg button.on { background: var(--bee, #ffcc00); color: #15171c; font-weight: 600; }
+
+/* Flag-tab action buttons. */
+.act-btn {
+  border: 1px solid var(--line, #dfe3ea); border-radius: 7px;
+  padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  background: transparent; white-space: nowrap;
+}
+.act-btn.todo { border-color: #ef4444; color: #ef4444; }
+.act-btn.done { border-color: #12a46b; color: #12a46b; }
+.act-btn.neutral { color: var(--muted, #6b7280); }
+.act-btn:hover { filter: brightness(1.08); }
+
+.pill.good { background: rgba(18, 164, 107, .12); color: #0e7f53; }
+.pill.warn { background: rgba(239, 159, 39, .14); color: #a35d05; }
+.muted { color: var(--muted, #9aa3b2); }
+
+/* Sidebar scroll area for long KAM lists. */
+.side-scroll { max-height: 46vh; overflow-y: auto; }
+.side-sub .mini { margin-left: auto; font-size: 10.5px; opacity: .7; }
+
+/* Aging spine bar in the Business Insights breakdown tables. */
+.spine {
+  display: flex; height: 9px; border-radius: 5px; overflow: hidden;
+  min-width: 120px;
+}
+.spine span { display: block; height: 100%; }
+
+/* Sticky first column for the wide tables. */
+.table-wrap th.sticky-col, .table-wrap td.sticky-col {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--panel, #ffffff);
+}
+.table-wrap thead th { position: sticky; top: 0; z-index: 2; }
+.table-wrap thead th.sticky-col { z-index: 3; }
