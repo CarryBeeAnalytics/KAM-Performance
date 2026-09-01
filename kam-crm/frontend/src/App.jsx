@@ -77,7 +77,7 @@ export default function App() {
         <header className="mainbar">
           <div>
             <h1>{TITLES[tab]}</h1>
-            <div className="crumb">CarryBee · KAM CRM</div>
+            <div className="crumb">TQM Merchant Health Tracker</div>
           </div>
           <div className="spacer" />
           <span className="chip">{scopeLabel}</span>
