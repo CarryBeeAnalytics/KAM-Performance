@@ -1365,8 +1365,9 @@ app.get("/api/health", async (_req, res) => {
 });
 
 const port = Number(process.env.PORT || 4000);
-app.listen(port, () => console.log(`KAM CRM v3 backend listening on :${port}`));
-
+app.listen(port, () =>
+  console.log(`TQM Merchant Health Tracker v3 backend listening on :${port}`)
+);
 process.on("SIGTERM", async () => {
   await pool.end();
   process.exit(0);
