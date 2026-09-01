@@ -31,7 +31,7 @@ export default function Login({ onSignedIn, theme, setTheme }) {
         <div className="brand" style={{ marginBottom: 6 }}>
           <div className="brand-badge">CB</div>
         </div>
-        <h1>KAM CRM</h1>
+        <h1>TQM Merchant Health Tracker</h1>
         <div className="sub">CarryBee · Sign in with your team account</div>
         <label>Username</label>
         <input
