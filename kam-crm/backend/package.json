@@ -1,5 +1,5 @@
 {
-  "name": "kam-crm-backend",
+  "name": "tqm-merchant-health-tracker-backend",
   "version": "1.0.0",
   "description": "CarryBee KAM CRM backend - Express + Supabase Postgres",
   "type": "module",
