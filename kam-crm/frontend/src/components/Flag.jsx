@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, scopeQuery } from "../api.js";
+import { DRIVE_HINT, isDriveLink, matchesMerchant } from "../validate.js";
 import {
   CallFollowUpModal,
   IssueModal,
@@ -34,7 +35,7 @@ function ActionButton({ active, done, label, onClick }) {
 
 function FlagTable({ rows, loading, onOpen }) {
   if (loading) return <div className="empty">Loading…</div>;
-  if (!rows.length) return <div className="empty">Nothing flagged in this scope.</div>;
+  if (!rows.length) return <div className="empty">No merchants match.</div>;
   return (
     <div className="table-wrap" style={{ maxHeight: "58vh" }}>
       <table>
@@ -51,14 +52,21 @@ function FlagTable({ rows, loading, onOpen }) {
             <th>Last 7 Day Order</th>
             <th>Risk</th>
             <th>Issue</th>
-            <th>Organic / Hunt</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.business_id}>
               <td className="sticky-col">{row.business_id}</td>
-              <td>{row.business_name}</td>
+              <td>
+                {row.business_name}
+                {row.carried_over > 0 && (
+                  <span className="pill warn" style={{ marginLeft: 6 }}
+                        title="Flags from earlier days that were not worked">
+                    {row.carried_over} carried over
+                  </span>
+                )}
+              </td>
               <td className={Number(row.order_gap_with_previous_day) < 0 ? "neg" : "pos"}>
                 {int(row.order_gap_with_previous_day)}
               </td>
@@ -107,7 +115,6 @@ function FlagTable({ rows, loading, onOpen }) {
                   {row.has_issue_feedback ? "✓ Issue" : "Issue"}
                 </button>
               </td>
-              <td>{row.acquisition_type}</td>
             </tr>
           ))}
         </tbody>
@@ -197,15 +204,19 @@ function CallTracker({ scopeQs, onSaved }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Weekly call · {editing.business_name}</h3>
             <label>Call recording drive link</label>
-            <input value={form.drive_link} autoFocus
+            <input value={form.drive_link} autoFocus placeholder="https://drive.google.com/…"
                    onChange={(e) => setForm({ ...form, drive_link: e.target.value })} />
+            <div className={form.drive_link.trim() && !isDriveLink(form.drive_link)
+              ? "error-text" : "charcount"}>
+              {DRIVE_HINT}
+            </div>
             <label>Note</label>
             <textarea rows={3} maxLength={1000} value={form.note}
                       onChange={(e) => setForm({ ...form, note: e.target.value })} />
             <div className="actions">
               <button className="btn" onClick={() => setEditing(null)}>Cancel</button>
               <button className="btn primary" onClick={save}
-                      disabled={!form.drive_link.trim()}>Save</button>
+                      disabled={!isDriveLink(form.drive_link)}>Save</button>
             </div>
           </div>
         </div>
@@ -214,16 +225,157 @@ function CallTracker({ scopeQs, onSaved }) {
   );
 }
 
+/* ------------------------------------------------------- flag history ----- */
+const FLAG_LABELS = { order_drop: "Order Drop", call_followup: "Call FollowUp", visit: "Visit" };
+const STATUS_TONE = { Worked: "good", "Worked Late": "", "Not Worked": "warn" };
+
+function stamp(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return d.toLocaleString("en-GB", {
+    timeZone: "Asia/Dhaka", day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+/**
+ * Every flag per reporting day. A flag not worked on its own day stays
+ * "Not Worked" here (and in the Carried Over count) until the merchant is
+ * worked; it then reads "Worked Late" so the missed day is never erased.
+ */
+function FlagHistory({ scopeQs, refreshKey, onOpen }) {
+  const [filters, setFilters] = useState({ from: "", to: "", status: "", type: "", q: "" });
+  const [search, setSearch] = useState("");
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+
+  // Search box waits for a pause in typing before querying.
+  useEffect(() => {
+    const timer = setTimeout(() => setFilters((f) => ({ ...f, q: search.trim() })), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => value && params.set(key, value));
+    const parts = [scopeQs, params.toString()].filter(Boolean).join("&");
+    setError("");
+    api(`/api/flag-history${parts ? `?${parts}` : ""}`)
+      .then(setData)
+      .catch((err) => setError(err.message));
+  }, [filters, scopeQs, refreshKey]);
+
+  const set = (key) => (e) => setFilters({ ...filters, [key]: e.target.value });
+
+  return (
+    <>
+      <div className="toolbar">
+        <input className="search" type="search" value={search}
+               onChange={(e) => setSearch(e.target.value)}
+               placeholder="Search Business ID or Name" />
+        <label>From
+          <input type="date" value={filters.from || data?.from || ""} onChange={set("from")} />
+        </label>
+        <label>To
+          <input type="date" value={filters.to || data?.to || ""} onChange={set("to")} />
+        </label>
+        <label>Status
+          <select value={filters.status} onChange={set("status")}>
+            <option value="">All</option>
+            <option>Not Worked</option>
+            <option>Worked</option>
+            <option>Worked Late</option>
+          </select>
+        </label>
+        <label>Flag
+          <select value={filters.type} onChange={set("type")}>
+            <option value="">All</option>
+            {Object.entries(FLAG_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {error && <div className="error-text">{error}</div>}
+      {!data ? (
+        <div className="empty">Loading flag history…</div>
+      ) : !data.rows.length ? (
+        <div className="empty">No flags match.</div>
+      ) : (
+        <>
+          <p className="sub">
+            {data.total > data.rows.length
+              ? `Showing the first ${int(data.rows.length)} of ${int(data.total)} flags — narrow the filters to see the rest.`
+              : `${int(data.total)} flags.`}
+          </p>
+          <div className="table-wrap" style={{ maxHeight: "50vh" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Flag Date</th>
+                  <th className="sticky-col">Business ID</th>
+                  <th>Business Name</th>
+                  <th>KAM</th>
+                  <th>Flag</th>
+                  <th>Status</th>
+                  <th>Worked By</th>
+                  <th>Worked At</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.reporting_date}</td>
+                    <td className="sticky-col">{row.business_id}</td>
+                    <td>{row.business_name}</td>
+                    <td>{row.kam_name}</td>
+                    <td>{FLAG_LABELS[row.flag_type] || row.flag_type}</td>
+                    <td><span className={`pill ${STATUS_TONE[row.status] ?? ""}`}>{row.status}</span></td>
+                    <td>{row.worked_by || "—"}</td>
+                    <td>{stamp(row.worked_at)}</td>
+                    <td>
+                      {row.status === "Not Worked" && (
+                        <button className="act-btn todo" onClick={() => onOpen(row.flag_type, row)}>
+                          Work now
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 /* -------------------------------------------------------------- the tab --- */
+const TYPE_FILTERS = [
+  { id: "", label: "All flags" },
+  { id: "order_drop", label: "Order Drop", field: "order_drop_active" },
+  { id: "call_followup", label: "Call FollowUp", field: "call_followup_active" },
+  { id: "visit", label: "Visit", field: "visit_active" },
+];
+
 export default function Flag({ scope, onWorked }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [modal, setModal] = useState(null);
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [historyKey, setHistoryKey] = useState(0);
 
   const qs = scopeQuery(scope);
   const flagQs = [qs, showAll ? "all=1" : ""].filter(Boolean).join("&");
+  const typeField = TYPE_FILTERS.find((t) => t.id === typeFilter)?.field;
+  const visibleRows = rows.filter(
+    (row) => matchesMerchant(row, search) && (!typeField || row[typeField])
+  );
 
   const load = useCallback(() => {
     setLoading(true);
@@ -238,6 +390,7 @@ export default function Flag({ scope, onWorked }) {
   function afterSave() {
     load();
     onWorked();
+    setHistoryKey((k) => k + 1);
   }
 
   const MODALS = {
@@ -268,9 +421,25 @@ export default function Flag({ scope, onWorked }) {
             </button>
           </div>
         </div>
+        <div className="toolbar">
+          <input className="search" type="search" value={search}
+                 onChange={(e) => setSearch(e.target.value)}
+                 placeholder="Search Business ID or Name" />
+          <div className="seg">
+            {TYPE_FILTERS.map((t) => (
+              <button key={t.id} className={typeFilter === t.id ? "on" : ""}
+                      onClick={() => setTypeFilter(t.id)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {!loading && (
+            <span className="sub">{int(visibleRows.length)} of {int(rows.length)} merchants</span>
+          )}
+        </div>
         {error && <div className="error-text">{error}</div>}
         <FlagTable
-          rows={rows}
+          rows={visibleRows}
           loading={loading}
           onOpen={(type, merchant) => setModal({ type, merchant })}
         />
@@ -279,6 +448,20 @@ export default function Flag({ scope, onWorked }) {
       <div className="panel">
         <h2>Weekly Call Tracker</h2>
         <CallTracker scopeQs={qs} onSaved={afterSave} />
+      </div>
+
+      <div className="panel">
+        <h2>Flag History</h2>
+        <p className="sub">
+          Every flag by day, and who worked it. A flag not worked on its own day
+          stays <b>Not Worked</b> and counts as carried over; once the merchant is
+          worked it becomes <b>Worked Late</b>, so the missed day stays on record.
+        </p>
+        <FlagHistory
+          scopeQs={qs}
+          refreshKey={historyKey}
+          onOpen={(type, merchant) => setModal({ type, merchant })}
+        />
       </div>
 
       {Modal && (

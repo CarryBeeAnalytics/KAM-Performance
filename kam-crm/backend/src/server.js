@@ -1,5 +1,5 @@
 /**
- * TQM Merchant Health Tracker - backend v3
+ * KAM CRM - backend v3
  * Data Intelligence & Research
  *
  * Four tabs: Home, Flag, Merchant Performance, Business Insights.
@@ -78,6 +78,14 @@ function pct(numerator, denominator) {
   return d === 0 ? null : (num(numerator) / d) * 100;
 }
 
+const DRIVE_LINK = /^https:\/\/(drive|docs)\.google\.com\/\S+$/i;
+function isDriveLink(value) {
+  return DRIVE_LINK.test(String(value || "").trim());
+}
+function wordCount(text) {
+  return String(text || "").trim().split(/\s+/).filter(Boolean).length;
+}
+
 async function flipAlertWorked(businessId, reportingDate, alertType) {
   await query(
     `UPDATE kam_alerts
@@ -85,6 +93,46 @@ async function flipAlertWorked(businessId, reportingDate, alertType) {
      WHERE business_id = $1 AND reporting_date = $2 AND alert_type = $3
        AND status <> 'Worked'`,
     [businessId, reportingDate, alertType]
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flag log (kam_flag_log, schema_v4_flags.sql). One row per merchant per flag
+// per reporting day. A database trigger fills it when the nightly job writes
+// kam_daily_report; syncFlagLog() is a throttled safety net for the same.
+//
+// Working any flag on a merchant marks that day's flag Worked and clears the
+// merchant's older pending flags as Worked Late - they leave the Carried Over
+// count, but the history still shows they were not worked on their own day.
+// ---------------------------------------------------------------------------
+const FLAG_SYNC_MS = 5 * 60 * 1000;
+let lastFlagSync = 0;
+
+async function syncFlagLog() {
+  if (Date.now() - lastFlagSync < FLAG_SYNC_MS) return;
+  lastFlagSync = Date.now();
+  try {
+    await query(`SELECT sync_kam_flag_log()`);
+  } catch (err) {
+    console.error("flag log sync:", err.message);
+  }
+}
+
+async function markFlagsWorked(businessId, reportingDate, flagType, username) {
+  lastFlagSync = 0;
+  await syncFlagLog();
+  await query(
+    `UPDATE kam_flag_log
+     SET status = 'Worked', worked_at = now(), worked_by = $4
+     WHERE business_id = $1 AND reporting_date = $2 AND flag_type = $3
+       AND status = 'Not Worked'`,
+    [businessId, reportingDate, flagType, username]
+  );
+  await query(
+    `UPDATE kam_flag_log
+     SET status = 'Worked Late', worked_at = now(), worked_by = $3
+     WHERE business_id = $1 AND reporting_date < $2 AND status = 'Not Worked'`,
+    [businessId, reportingDate, username]
   );
 }
 
@@ -281,6 +329,109 @@ app.put("/api/targets", authRequired, async (req, res) => {
   }
 });
 
+// Targets sheet: every KAM's targets for one month in a single save. A blank
+// cell is stored as NULL so it inherits the lead / global value; a row with
+// every cell blank removes that KAM's own target for the month.
+const SHEET_FIELDS = [
+  "target_revenue",
+  "unlock_threshold_pct",
+  "incentive_pct",
+  "incremental_target_pct",
+  "retention_target_pct",
+];
+
+app.put("/api/targets/bulk", authRequired, async (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Only an Admin can set targets." });
+  }
+  const { month, rows } = req.body || {};
+  if (!Array.isArray(rows) || !rows.length) {
+    return res.status(400).json({ error: "The sheet has no rows." });
+  }
+  const reportMonth = String(month || currentMonthStart()).slice(0, 10);
+  const directory = await loadDirectory();
+  const canonical = new Map(directory.map((row) => [normalize(row.kam_name), row.kam_name]));
+
+  const clean = [];
+  const problems = [];
+  rows.forEach((row, i) => {
+    const kam = canonical.get(normalize(row?.kam_name));
+    if (!kam) {
+      problems.push(`Row ${i + 1}: "${row?.kam_name ?? ""}" is not a KAM in the directory.`);
+      return;
+    }
+    const values = {};
+    for (const field of SHEET_FIELDS) {
+      const raw = row[field];
+      if (raw === null || raw === undefined || String(raw).trim() === "") {
+        values[field] = null;
+        continue;
+      }
+      const parsed = Number(String(raw).replace(/[,%৳\s]/g, ""));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        problems.push(`Row ${i + 1} (${kam}): ${field} must be a number of 0 or more.`);
+        return;
+      }
+      values[field] = parsed;
+    }
+    clean.push({ kam, values });
+  });
+  if (problems.length) {
+    return res.status(400).json({ error: problems.slice(0, 8).join(" ") });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let saved = 0;
+    let cleared = 0;
+    for (const { kam, values } of clean) {
+      if (SHEET_FIELDS.every((field) => values[field] === null)) {
+        const result = await client.query(
+          `DELETE FROM kam_targets
+           WHERE scope_type = 'kam' AND lower(btrim(scope_value)) = lower(btrim($1))
+             AND report_month = $2`,
+          [kam, reportMonth]
+        );
+        cleared += result.rowCount;
+        continue;
+      }
+      // A name typed with different casing in the single-target form would
+      // otherwise survive as a second, conflicting row.
+      await client.query(
+        `DELETE FROM kam_targets
+         WHERE scope_type = 'kam' AND lower(btrim(scope_value)) = lower(btrim($1))
+           AND scope_value <> $1 AND report_month = $2`,
+        [kam, reportMonth]
+      );
+      await client.query(
+        `INSERT INTO kam_targets
+           (scope_type, scope_value, report_month, target_revenue, unlock_threshold_pct,
+            incentive_pct, incremental_target_pct, retention_target_pct, updated_by)
+         VALUES ('kam', $1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (scope_type, scope_value, report_month) DO UPDATE SET
+           target_revenue = EXCLUDED.target_revenue,
+           unlock_threshold_pct = EXCLUDED.unlock_threshold_pct,
+           incentive_pct = EXCLUDED.incentive_pct,
+           incremental_target_pct = EXCLUDED.incremental_target_pct,
+           retention_target_pct = EXCLUDED.retention_target_pct,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = now()`,
+        [kam, reportMonth, ...SHEET_FIELDS.map((field) => values[field]), req.user.username]
+      );
+      saved += 1;
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true, saved, cleared });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("targets bulk:", err);
+    res.status(500).json({ error: "Could not save the targets sheet." });
+  } finally {
+    client.release();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // HOME
 //
@@ -294,8 +445,10 @@ app.put("/api/targets", authRequired, async (req, res) => {
 //   Active / Inactive        at least one processed order in the trailing 30
 //                            days ending at the cutoff / otherwise
 //   New Onboard / Churn Win  mutually exclusive monthly classification
-//   Total Alerts / Worked /  from kam_alerts (order_drop, call_followup, visit;
-//   Not Worked               issue never raises an alert in v3)
+//   Total Alerts / Worked /  from kam_flag_log, latest reporting day only
+//   Not Worked               (order_drop, call_followup, visit; issue never
+//                            raises a flag)
+//   Carried Over             flags from earlier days still Not Worked
 //   Call Tracker Alerts      merchants owing a call in the current BD week
 //
 //   NEW SALES
@@ -370,12 +523,22 @@ app.get("/api/home", authRequired, async (req, res) => {
       [...scope.params, month]
     );
 
+    // Flags: today's counts only, plus everything still pending from earlier
+    // reporting days (carried over). "Today" is the latest reporting day.
+    await syncFlagLog();
     const alertsResult = await query(
-      `SELECT COUNT(*)::int AS total_alerts,
-              COUNT(*) FILTER (WHERE a.status = 'Worked')::int AS worked,
-              COUNT(*) FILTER (WHERE a.status = 'Not Worked')::int AS not_worked
-       FROM kam_alerts a
-       WHERE lower(btrim(a.kam_name)) = ANY($1::text[])`,
+      `WITH today AS (SELECT MAX(reporting_date) AS d FROM kam_daily_report)
+       SELECT COUNT(*) FILTER (WHERE f.reporting_date = t.d)::int AS total_alerts,
+              COUNT(*) FILTER (WHERE f.reporting_date = t.d
+                                 AND f.status <> 'Not Worked')::int AS worked,
+              COUNT(*) FILTER (WHERE f.reporting_date = t.d
+                                 AND f.status = 'Not Worked')::int AS not_worked,
+              COUNT(*) FILTER (WHERE f.reporting_date < t.d
+                                 AND f.status = 'Not Worked')::int AS carried_over,
+              COUNT(DISTINCT f.business_id) FILTER (WHERE f.reporting_date < t.d
+                                 AND f.status = 'Not Worked')::int AS carried_over_merchants
+       FROM kam_flag_log f CROSS JOIN today t
+       WHERE lower(btrim(f.kam_name)) = ANY($1::text[])`,
       scope.params
     );
 
@@ -397,11 +560,12 @@ app.get("/api/home", authRequired, async (req, res) => {
     const trendResult = await query(
       `SELECT reporting_date::text AS d,
               COUNT(*) FILTER (WHERE status = 'Worked')::int AS worked,
+              COUNT(*) FILTER (WHERE status = 'Worked Late')::int AS worked_late,
               COUNT(*) FILTER (WHERE status = 'Not Worked')::int AS not_worked
-       FROM kam_alerts
+       FROM kam_flag_log
        WHERE lower(btrim(kam_name)) = ANY($1::text[])
          AND reporting_date >= (SELECT COALESCE(MAX(reporting_date), CURRENT_DATE)
-                                FROM kam_alerts) - INTERVAL '6 days'
+                                FROM kam_flag_log) - INTERVAL '6 days'
        GROUP BY 1 ORDER BY 1`,
       scope.params
     );
@@ -452,6 +616,8 @@ app.get("/api/home", authRequired, async (req, res) => {
         total_alerts: alertsResult.rows[0].total_alerts,
         worked_on: alertsResult.rows[0].worked,
         not_worked_on: alertsResult.rows[0].not_worked,
+        carried_over: alertsResult.rows[0].carried_over,
+        carried_over_merchants: alertsResult.rows[0].carried_over_merchants,
         call_tracker_alerts: obligations,
         call_tracker_not_worked: Math.max(obligations - callsWorked, 0),
       },
@@ -499,6 +665,7 @@ app.get("/api/home", authRequired, async (req, res) => {
       alert_trend: trendResult.rows.map((row) => ({
         date: row.d,
         worked: row.worked,
+        worked_late: row.worked_late,
         not_worked: row.not_worked,
       })),
       order_trend: orderTrendResult.rows.map((row) => ({
@@ -551,7 +718,10 @@ const FLAG_SELECT = `
   (fod.id IS NOT NULL) AS has_order_drop_feedback,
   (fcf.id IS NOT NULL) AS has_call_followup_feedback,
   (fv.id IS NOT NULL)  AS has_visit_feedback,
-  (fi.id IS NOT NULL)  AS has_issue_feedback
+  (fi.id IS NOT NULL)  AS has_issue_feedback,
+  (SELECT COUNT(*)::int FROM kam_flag_log fl
+    WHERE fl.business_id = d.business_id AND fl.reporting_date < d.reporting_date
+      AND fl.status = 'Not Worked') AS carried_over
 `;
 
 const FLAG_JOINS = `
@@ -573,6 +743,7 @@ app.get("/api/flag", authRequired, async (req, res) => {
     // ?all=1 returns the whole book; the default shows only rows with a live
     // button, which is what the Flag table is for.
     const onlyFlagged = String(req.query.all || "") !== "1";
+    await syncFlagLog();
     const flaggedFilter = onlyFlagged
       ? `AND ( d.order_gap_with_previous_day < 0
                OR d.last_order_date IS NULL
@@ -643,6 +814,7 @@ app.post("/api/feedback/order-drop", authRequired, async (req, res) => {
        reportingDate, trimmed, req.user.username]
     );
     await flipAlertWorked(merchant.business_id, reportingDate, "order_drop");
+    await markFlagsWorked(merchant.business_id, reportingDate, "order_drop", req.user.username);
     res.json({ ok: true });
   } catch (err) {
     console.error("order-drop:", err);
@@ -659,6 +831,9 @@ app.post("/api/feedback/call-followup", authRequired, async (req, res) => {
       return res
         .status(400)
         .json({ error: "Add the call recording link or a short note." });
+    }
+    if (link && !isDriveLink(link)) {
+      return res.status(400).json({ error: "The call recording must be a Google Drive link." });
     }
     if (note.length > 1000) {
       return res.status(400).json({ error: "The note is limited to 1000 characters." });
@@ -682,6 +857,7 @@ app.post("/api/feedback/call-followup", authRequired, async (req, res) => {
        reportingDate, link, note, req.user.username]
     );
     await flipAlertWorked(merchant.business_id, reportingDate, "call_followup");
+    await markFlagsWorked(merchant.business_id, reportingDate, "call_followup", req.user.username);
     res.json({ ok: true });
   } catch (err) {
     console.error("call-followup:", err);
@@ -691,11 +867,17 @@ app.post("/api/feedback/call-followup", authRequired, async (req, res) => {
 
 app.post("/api/feedback/visit", authRequired, async (req, res) => {
   try {
-    const { business_id, call_record_link, visit_pic_link } = req.body || {};
-    const callLink = String(call_record_link || "").trim();
+    const { business_id, visit_pic_link, comment } = req.body || {};
     const picLink = String(visit_pic_link || "").trim();
-    if (!callLink && !picLink) {
-      return res.status(400).json({ error: "Add the call record link or the visit picture link." });
+    const note = String(comment || "").trim();
+    if (!picLink) {
+      return res.status(400).json({ error: "Add the visit picture link." });
+    }
+    if (!isDriveLink(picLink)) {
+      return res.status(400).json({ error: "The visit picture must be a Google Drive link." });
+    }
+    if (wordCount(note) > 500) {
+      return res.status(400).json({ error: "The visit note is limited to 500 words." });
     }
     const merchant = await loadMerchantForUser(req.user, Number(business_id));
     if (!merchant) return res.status(404).json({ error: "Merchant not found." });
@@ -706,16 +888,17 @@ app.post("/api/feedback/visit", authRequired, async (req, res) => {
     await query(
       `INSERT INTO feedback_visit
          (business_id, business_name, kam_name, reporting_date,
-          call_record_link, visit_pic_link, created_by)
+          visit_pic_link, comment, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (business_id, reporting_date)
-       DO UPDATE SET call_record_link = EXCLUDED.call_record_link,
-                     visit_pic_link = EXCLUDED.visit_pic_link,
+       DO UPDATE SET visit_pic_link = EXCLUDED.visit_pic_link,
+                     comment = EXCLUDED.comment,
                      updated_at = now()`,
       [merchant.business_id, merchant.business_name, merchant.kam_name,
-       reportingDate, callLink, picLink, req.user.username]
+       reportingDate, picLink, note, req.user.username]
     );
     await flipAlertWorked(merchant.business_id, reportingDate, "visit");
+    await markFlagsWorked(merchant.business_id, reportingDate, "visit", req.user.username);
     res.json({ ok: true });
   } catch (err) {
     console.error("visit:", err);
@@ -809,6 +992,9 @@ app.post("/api/weekly-calls", authRequired, async (req, res) => {
         .status(400)
         .json({ error: "Add the call recording drive link to mark this call Worked." });
     }
+    if (!isDriveLink(trimmedLink)) {
+      return res.status(400).json({ error: "The call recording must be a Google Drive link." });
+    }
     const merchant = await loadMerchantForUser(req.user, Number(business_id));
     if (!merchant) return res.status(404).json({ error: "Merchant not found." });
     if (merchant === "forbidden") {
@@ -835,6 +1021,72 @@ app.post("/api/weekly-calls", authRequired, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Flag history (Flag tab, third table): every flag per reporting day with who
+// worked it and when, so a missed day stays on record.
+//   ?from=&to=   reporting-date range (default: the last 7 reporting days)
+//   ?status=     Worked | Worked Late | Not Worked
+//   ?type=       order_drop | call_followup | visit
+//   ?q=          business ID or part of the business name
+// ---------------------------------------------------------------------------
+const HISTORY_LIMIT = 1000;
+
+app.get("/api/flag-history", authRequired, async (req, res) => {
+  try {
+    const scope = await resolveScope(req, "f");
+    if (scope.error) return res.status(scope.status).json({ error: scope.error });
+    await syncFlagLog();
+
+    const { rows: span } = await query(
+      `SELECT MAX(reporting_date)::text AS max_date,
+              (MAX(reporting_date) - 6)::text AS default_from
+       FROM kam_flag_log`
+    );
+    const to = String(req.query.to || span[0].max_date || "").slice(0, 10);
+    const from = String(req.query.from || span[0].default_from || "").slice(0, 10);
+    if (!to || !from) return res.json({ rows: [], total: 0, from, to, limit: HISTORY_LIMIT });
+
+    const params = [...scope.params, from, to];
+    let extra = "";
+    const status = String(req.query.status || "").trim();
+    if (["Worked", "Worked Late", "Not Worked"].includes(status)) {
+      params.push(status);
+      extra += ` AND f.status = $${params.length}`;
+    }
+    const type = String(req.query.type || "").trim();
+    if (["order_drop", "call_followup", "visit"].includes(type)) {
+      params.push(type);
+      extra += ` AND f.flag_type = $${params.length}`;
+    }
+    const search = String(req.query.q || "").trim();
+    if (search) {
+      params.push(search);
+      extra += ` AND (f.business_id::text = $${params.length}
+                      OR f.business_name ILIKE '%' || $${params.length} || '%')`;
+    }
+    const where = `WHERE ${scope.where}
+                     AND f.reporting_date >= $2 AND f.reporting_date <= $3 ${extra}`;
+
+    const [list, count] = await Promise.all([
+      query(
+        `SELECT f.id, f.business_id, f.business_name, f.kam_name,
+                f.reporting_date::text AS reporting_date, f.flag_type, f.status,
+                f.worked_at, f.worked_by
+         FROM kam_flag_log f ${where}
+         ORDER BY f.reporting_date DESC, (f.status = 'Not Worked') DESC,
+                  f.kam_name, f.business_id
+         LIMIT ${HISTORY_LIMIT}`,
+        params
+      ),
+      query(`SELECT COUNT(*)::int AS total FROM kam_flag_log f ${where}`, params),
+    ]);
+    res.json({ rows: list.rows, total: count.rows[0].total, from, to, limit: HISTORY_LIMIT });
+  } catch (err) {
+    console.error("flag-history:", err);
+    res.status(500).json({ error: "Could not load the flag history." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Alerts
 // ---------------------------------------------------------------------------
 app.get("/api/alerts", authRequired, async (req, res) => {
@@ -855,11 +1107,12 @@ app.get("/api/alerts", authRequired, async (req, res) => {
 
 app.get("/api/alerts/count", authRequired, async (req, res) => {
   try {
-    const scope = await resolveScope(req, "a");
+    const scope = await resolveScope(req, "f");
     if (scope.error) return res.status(scope.status).json({ error: scope.error });
+    await syncFlagLog();
     const { rows } = await query(
-      `SELECT COUNT(*)::int AS pending FROM kam_alerts a
-       WHERE a.status = 'Not Worked' AND ${scope.where}`,
+      `SELECT COUNT(*)::int AS pending FROM kam_flag_log f
+       WHERE f.status = 'Not Worked' AND ${scope.where}`,
       scope.params
     );
     res.json({ pending: rows[0].pending });
@@ -878,6 +1131,12 @@ app.get("/api/merchants", authRequired, async (req, res) => {
   try {
     const scope = await resolveScope(req, "d");
     if (scope.error) return res.status(scope.status).json({ error: scope.error });
+    // Last month = the previous full BD calendar month (1st to 28/29/30/31st),
+    // summed from the permanent DOD archive so it matches the DOD table and is
+    // available from the first day of the new month.
+    const monthStart = new Date(`${currentMonthStart()}T00:00:00Z`);
+    monthStart.setUTCMonth(monthStart.getUTCMonth() - 1);
+    const lastMonth = monthStart.toISOString().slice(0, 10);
     const { rows } = await query(
       `SELECT d.*,
               mp.promised_order,
@@ -885,17 +1144,24 @@ app.get("/api/merchants", authRequired, async (req, res) => {
                    ELSE ROUND(d.avg_order / mp.promised_order, 4) END AS avg_vs_promised,
               mm.classification,
               mm.orders_month,
-              mm.revenue_month
+              mm.revenue_month,
+              lm.orders AS last_month_order
        FROM kam_daily_report d
        LEFT JOIN merchant_promised_order mp ON mp.business_id = d.business_id
        LEFT JOIN kam_merchant_month mm
               ON mm.business_id = d.business_id
              AND mm.report_month = date_trunc('month', CURRENT_DATE)::date
+       LEFT JOIN (
+         SELECT m.business_id, SUM(v.value::numeric)::bigint AS orders
+         FROM kam_dod_monthly m, jsonb_each_text(m.day_values) v
+         WHERE m.report_month = $${scope.params.length + 1}::date
+         GROUP BY m.business_id
+       ) lm ON lm.business_id = d.business_id
        WHERE ${scope.where}
        ORDER BY d.business_id`,
-      scope.params
+      [...scope.params, lastMonth]
     );
-    res.json({ merchants: rows });
+    res.json({ merchants: rows, last_month: lastMonth });
   } catch (err) {
     console.error("merchants:", err);
     res.status(500).json({ error: "Could not load merchants." });
@@ -1366,7 +1632,7 @@ app.get("/api/health", async (_req, res) => {
 
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () =>
-  console.log(`TQM Merchant Health Tracker v3 backend listening on :${port}`)
+  console.log(`KAM CRM v3 backend listening on :${port}`)
 );
 process.on("SIGTERM", async () => {
   await pool.end();

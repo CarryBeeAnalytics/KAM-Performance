@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, scopeQuery } from "../api.js";
 import LineChart from "./LineChart.jsx";
+import TargetSheet from "./TargetSheet.jsx";
 
 const int = (v) => Number(v ?? 0).toLocaleString("en-US");
 const money = (v) => `৳${Math.round(Number(v ?? 0)).toLocaleString("en-US")}`;
@@ -119,6 +120,7 @@ export default function Home({ user, scope }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const qs = scopeQuery(scope);
 
@@ -173,12 +175,14 @@ export default function Home({ user, scope }) {
              hint="first ever order this month" />
         <Kpi label="Churn Win Merchant" value={int(c.churn_win)}
              hint="returned after a 30+ day gap" />
-        <Kpi label="Total Alerts" value={int(c.total_alerts)} tone="dark"
-             hint="order drop · call · visit" />
-        <Kpi label="Worked On" value={int(c.worked_on)} tone="green"
-             hint="alerts with feedback" />
-        <Kpi label="Not Worked On" value={int(c.not_worked_on)} tone="red"
-             hint="alerts still pending" />
+        <Kpi label="Total Alerts (Today)" value={int(c.total_alerts)} tone="dark"
+             hint={`new flags on ${data.reporting_date || "the latest day"}`} />
+        <Kpi label="Worked On (Today)" value={int(c.worked_on)} tone="green"
+             hint="today's flags with feedback" />
+        <Kpi label="Not Worked On (Today)" value={int(c.not_worked_on)} tone="red"
+             hint="today's flags still pending" />
+        <Kpi label="Carried Over Flags" value={int(c.carried_over)} tone="red"
+             hint={`not worked before today · ${int(c.carried_over_merchants)} merchants`} />
         <Kpi label="Call Tracker Alerts" value={int(c.call_tracker_alerts)} tone="dark"
              hint={`${int(c.call_tracker_not_worked)} still pending this week`} />
       </div>
@@ -195,9 +199,14 @@ export default function Home({ user, scope }) {
             </p>
           </div>
           {data.can_edit_targets && (
-            <button className="btn primary" onClick={() => setEditing(true)}>
-              Set targets
-            </button>
+            <div className="toolbar" style={{ margin: 0 }}>
+              <button className="btn" onClick={() => setSheetOpen(true)}>
+                Targets sheet
+              </button>
+              <button className="btn primary" onClick={() => setEditing(true)}>
+                Set targets
+              </button>
+            </div>
           )}
         </div>
 
@@ -276,11 +285,15 @@ export default function Home({ user, scope }) {
       <div className="chart-grid">
         <div className="panel">
           <h2>Worked vs Not Worked</h2>
-          <p className="sub">Alerts over the last 7 reporting days.</p>
+          <p className="sub">
+            Flags by the day they were raised, last 7 reporting days. Worked Late
+            = cleared on a later day.
+          </p>
           <LineChart
             labels={data.alert_trend.map((row) => shortDate(row.date))}
             series={[
               { name: "Worked", color: "var(--good)", values: data.alert_trend.map((r) => r.worked) },
+              { name: "Worked Late", color: "var(--bee)", values: data.alert_trend.map((r) => r.worked_late) },
               { name: "Not Worked", color: "var(--bad)", values: data.alert_trend.map((r) => r.not_worked) },
             ]}
           />
@@ -302,6 +315,13 @@ export default function Home({ user, scope }) {
           month={data.report_month}
           scope={scope}
           onClose={() => setEditing(false)}
+          onSaved={load}
+        />
+      )}
+      {sheetOpen && (
+        <TargetSheet
+          month={data.report_month}
+          onClose={() => setSheetOpen(false)}
           onSaved={load}
         />
       )}

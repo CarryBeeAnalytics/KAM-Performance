@@ -1,5 +1,21 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { DRIVE_HINT, isDriveLink, wordCount } from "../validate.js";
+
+const VISIT_WORD_LIMIT = 500;
+
+/** A link input that only accepts Google Drive links. */
+function DriveLinkInput({ value, onChange, autoFocus }) {
+  const invalid = value.trim().length > 0 && !isDriveLink(value);
+  return (
+    <>
+      <input value={value} onChange={(e) => onChange(e.target.value)}
+             placeholder="https://drive.google.com/…" autoFocus={autoFocus}
+             aria-invalid={invalid} style={invalid ? { borderColor: "#ef4444" } : undefined} />
+      <div className={invalid ? "error-text" : "charcount"}>{DRIVE_HINT}</div>
+    </>
+  );
+}
 
 /**
  * Four feedback modals, one per Flag-tab button.
@@ -76,7 +92,9 @@ export function OrderDropModal({ merchant, onClose, onSaved }) {
   return (
     <Shell
       title={`Order drop · ${merchant.business_name}`}
-      sub={`Orders fell by ${Math.abs(Number(merchant.order_gap_with_previous_day))} versus the previous day. Record why.`}
+      sub={merchant.order_gap_with_previous_day === undefined
+        ? "Record why the orders dropped."
+        : `Orders fell by ${Math.abs(Number(merchant.order_gap_with_previous_day))} versus the previous day. Record why.`}
       onClose={onClose}
       onSave={() => save({ business_id: merchant.business_id, comment })}
       busy={busy}
@@ -106,11 +124,13 @@ export function CallFollowUpModal({ merchant, onClose, onSaved }) {
       }
       busy={busy}
       error={error}
-      canSave={link.trim().length > 0 || comment.trim().length > 0}
+      canSave={
+        (link.trim().length > 0 || comment.trim().length > 0) &&
+        (link.trim().length === 0 || isDriveLink(link))
+      }
     >
       <label>Call recording link</label>
-      <input value={link} onChange={(e) => setLink(e.target.value)}
-             placeholder="https://drive.google.com/…" autoFocus />
+      <DriveLinkInput value={link} onChange={setLink} autoFocus />
       <label>Note</label>
       <textarea rows={3} maxLength={1000} value={comment}
                 onChange={(e) => setComment(e.target.value)} />
@@ -121,29 +141,30 @@ export function CallFollowUpModal({ merchant, onClose, onSaved }) {
 }
 
 export function VisitModal({ merchant, onClose, onSaved }) {
-  const [callLink, setCallLink] = useState("");
   const [picLink, setPicLink] = useState("");
+  const [comment, setComment] = useState("");
   const { busy, error, save } = useSaver("/api/feedback/visit", onSaved, onClose);
+  const words = wordCount(comment);
   return (
     <Shell
       title={`Visit · ${merchant.business_name}`}
       sub={`No order for ${merchant.order_gap_days ?? "3+"} days. Record the visit.`}
       onClose={onClose}
       onSave={() =>
-        save({
-          business_id: merchant.business_id,
-          call_record_link: callLink,
-          visit_pic_link: picLink,
-        })
+        save({ business_id: merchant.business_id, visit_pic_link: picLink, comment })
       }
       busy={busy}
       error={error}
-      canSave={callLink.trim().length > 0 || picLink.trim().length > 0}
+      canSave={isDriveLink(picLink) && words <= VISIT_WORD_LIMIT}
     >
-      <label>Call record link</label>
-      <input value={callLink} onChange={(e) => setCallLink(e.target.value)} autoFocus />
       <label>Visit picture link</label>
-      <input value={picLink} onChange={(e) => setPicLink(e.target.value)} />
+      <DriveLinkInput value={picLink} onChange={setPicLink} autoFocus />
+      <label>Visit note</label>
+      <textarea rows={5} value={comment} onChange={(e) => setComment(e.target.value)}
+                placeholder="What happened on the visit" />
+      <div className={words > VISIT_WORD_LIMIT ? "error-text" : "charcount"}>
+        {words}/{VISIT_WORD_LIMIT} words
+      </div>
       <History type="visit" businessId={merchant.business_id} />
     </Shell>
   );

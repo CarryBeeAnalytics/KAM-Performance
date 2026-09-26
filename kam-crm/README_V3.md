@@ -22,6 +22,8 @@ tabs, and Business Insights for the whole merchant book.
 ```
 supabase/schema_v3_full.sql         RUN THIS ONE — self-sufficient
 supabase/schema_v3.sql              v3 additions only; needs v2 already present
+supabase/schema_v4_flags.sql        run AFTER v3 — daily flag log (carry-over),
+                                    visit note, blank-inherits bulk targets
 scripts/carrybee_business_insights.py   merged analytics job -> Supabase
 scripts/kamp_v3_patch.py            drop-in changes for the existing KAMP job
 backend/src/auth.js                 replaces the v2 file

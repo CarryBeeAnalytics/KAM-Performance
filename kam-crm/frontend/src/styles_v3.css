@@ -72,3 +72,10 @@
 }
 .table-wrap thead th { position: sticky; top: 0; z-index: 2; }
 .table-wrap thead th.sticky-col { z-index: 3; }
+
+/* Business ID / Name search boxes. */
+.toolbar input.search { margin-left: 0; width: min(100%, 260px); }
+
+/* Targets sheet: a wide modal holding an editable grid. */
+.modal.modal-wide { width: min(100%, 1040px); }
+.sheet td input { width: 120px; padding: 5px 8px; }

@@ -58,7 +58,7 @@ export default function Sidebar({
       <div className="side-brand">
         <div className="badge">CB</div>
         <div>
-          <b>TQM Merchant Health Tracker</b>
+          <b>KAM CRM</b>
           <small>CarryBee · Business Development</small>
         </div>
       </div>

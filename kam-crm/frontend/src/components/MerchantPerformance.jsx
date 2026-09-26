@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, scopeQuery } from "../api.js";
+import { matchesMerchant } from "../validate.js";
 
 const int = (v) => Number(v ?? 0).toLocaleString("en-US");
 const day = (v) => (v ? String(v).slice(0, 10) : "—");
@@ -71,9 +72,13 @@ function PromisedOrderModal({ merchant, onClose, onSaved }) {
 }
 
 /* ------------------------------------------------------ lifetime table --- */
-function LifetimeTable({ merchants, loading, onPromise }) {
+function LifetimeTable({ merchants, lastMonth, loading, onPromise }) {
   if (loading) return <div className="empty">Loading merchants…</div>;
-  if (!merchants.length) return <div className="empty">No merchants in this scope.</div>;
+  if (!merchants.length) return <div className="empty">No merchants match.</div>;
+  // Named after the month it holds, e.g. "August Order"; changes with the month.
+  const lastMonthLabel = lastMonth
+    ? `${new Date(`${lastMonth}T00:00:00Z`).toLocaleString("en", { month: "long", timeZone: "UTC" })} Order`
+    : "Last Month Order";
   return (
     <div className="table-wrap" style={{ maxHeight: "62vh" }}>
       <table>
@@ -88,6 +93,7 @@ function LifetimeTable({ merchants, loading, onPromise }) {
             <th>Lifetime Delivered</th>
             <th>Lifetime Returned</th>
             <th>Lifetime Active Days</th>
+            <th title="Total orders from the 1st to the last day of last month">{lastMonthLabel}</th>
             <th>Avg. Order</th>
             <th>Max Order in a Day</th>
             <th>Potentiality</th>
@@ -97,6 +103,7 @@ function LifetimeTable({ merchants, loading, onPromise }) {
             <th>Last Day Order</th>
             <th>Last 7 Day Order</th>
             <th>Risk</th>
+            <th>Organic / Hunt</th>
           </tr>
         </thead>
         <tbody>
@@ -111,6 +118,8 @@ function LifetimeTable({ merchants, loading, onPromise }) {
               <td>{int(m.lifetime_delivered)}</td>
               <td>{int(m.lifetime_returned)}</td>
               <td>{int(m.lifetime_active_days)}</td>
+              <td>{m.last_month_order === null || m.last_month_order === undefined
+                ? "—" : int(m.last_month_order)}</td>
               <td>{Number(m.avg_order ?? 0).toFixed(2)}</td>
               <td>{int(m.max_order_in_a_day)}</td>
               <td><span className="pill">{m.potentiality || "—"}</span></td>
@@ -134,6 +143,7 @@ function LifetimeTable({ merchants, loading, onPromise }) {
                   {m.risk || "—"}
                 </span>
               </td>
+              <td>{m.acquisition_type || "Not Specified"}</td>
             </tr>
           ))}
         </tbody>
@@ -148,6 +158,8 @@ function DodTable({ scopeQs }) {
   const [month, setMonth] = useState("");
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const visibleRows = rows.filter((row) => matchesMerchant(row, search));
 
   useEffect(() => {
     api("/api/dod/months")
@@ -179,6 +191,9 @@ function DodTable({ scopeQs }) {
   return (
     <>
       <div className="toolbar">
+        <input className="search" type="search" value={search}
+               onChange={(e) => setSearch(e.target.value)}
+               placeholder="Search Business ID or Name" />
         <label>
           Month{" "}
           <select value={month} onChange={(e) => setMonth(e.target.value)}>
@@ -187,7 +202,11 @@ function DodTable({ scopeQs }) {
             ))}
           </select>
         </label>
-        <span className="sub">{rows.length} merchants · {dayKeys.length} days</span>
+        <span className="sub">
+          {visibleRows.length === rows.length
+            ? rows.length
+            : `${visibleRows.length} of ${rows.length}`} merchants · {dayKeys.length} days
+        </span>
       </div>
       <div className="table-wrap" style={{ maxHeight: "58vh" }}>
         <table>
@@ -201,7 +220,7 @@ function DodTable({ scopeQs }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {visibleRows.map((row) => (
               <tr key={row.business_id}>
                 <td className="sticky-col">{row.business_id}</td>
                 <td>{row.business_name}</td>
@@ -225,16 +244,22 @@ function DodTable({ scopeQs }) {
 /* -------------------------------------------------------------- the tab --- */
 export default function MerchantPerformance({ scope }) {
   const [merchants, setMerchants] = useState([]);
+  const [lastMonth, setLastMonth] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [promising, setPromising] = useState(null);
+  const [search, setSearch] = useState("");
 
   const qs = scopeQuery(scope);
+  const visibleMerchants = merchants.filter((m) => matchesMerchant(m, search));
 
   const load = useCallback(() => {
     setLoading(true);
     api(`/api/merchants${qs ? `?${qs}` : ""}`)
-      .then((body) => setMerchants(body.merchants))
+      .then((body) => {
+        setMerchants(body.merchants);
+        setLastMonth(body.last_month || "");
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [qs]);
@@ -249,8 +274,21 @@ export default function MerchantPerformance({ scope }) {
           Max Order in a Day and Potentiality now sit beside the lifetime
           figures, so the daily table no longer has to be opened to read them.
         </p>
+        <div className="toolbar">
+          <input className="search" type="search" value={search}
+                 onChange={(e) => setSearch(e.target.value)}
+                 placeholder="Search Business ID or Name" />
+          {!loading && (
+            <span className="sub">
+              {visibleMerchants.length === merchants.length
+                ? merchants.length
+                : `${visibleMerchants.length} of ${merchants.length}`} merchants
+            </span>
+          )}
+        </div>
         {error && <div className="error-text">{error}</div>}
-        <LifetimeTable merchants={merchants} loading={loading} onPromise={setPromising} />
+        <LifetimeTable merchants={visibleMerchants} lastMonth={lastMonth}
+                       loading={loading} onPromise={setPromising} />
       </div>
 
       <div className="panel">
