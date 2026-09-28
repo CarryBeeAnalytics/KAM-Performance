@@ -172,9 +172,9 @@ export default function Home({ user, scope }) {
         <Kpi label="Total Inactive Merchant" value={int(c.inactive_merchant)} tone="red"
              hint="no order in 30 days" />
         <Kpi label="New Onboard Merchant" value={int(c.new_onboard)}
-             hint="first ever order this month" />
+             hint="first parcel from the 16th of last month" />
         <Kpi label="Churn Win Merchant" value={int(c.churn_win)}
-             hint="returned after a 30+ day gap" />
+             hint="back after a 30+ day gap, from the 16th of last month" />
         <Kpi label="Total Alerts (Today)" value={int(c.total_alerts)} tone="dark"
              hint={`new flags on ${data.reporting_date || "the latest day"}`} />
         <Kpi label="Worked On (Today)" value={int(c.worked_on)} tone="green"
@@ -193,9 +193,15 @@ export default function Home({ user, scope }) {
           <div>
             <h2>New Sales</h2>
             <p className="sub">
-              Achievement revenue is this month's revenue from New Onboard and
-              Churn Win merchants. Target resolved from the{" "}
-              <b>{ns.resolved_from}</b> level.
+              Achievement revenue is this month's revenue so far from New
+              Onboard and Churn Win merchants (a merchant whose first parcel or
+              comeback was on the 16th or later stays in that Type next month).
+              Target:{" "}
+              <b>
+                {ns.resolved_from.startsWith("sum")
+                  ? ns.resolved_from
+                  : `${ns.resolved_from} level`}
+              </b>.
             </p>
           </div>
           {data.can_edit_targets && (
@@ -237,9 +243,10 @@ export default function Home({ user, scope }) {
       <div className="panel">
         <h2>Same Store Incremental</h2>
         <p className="sub">
-          Same store = merchants classified Existing that also ordered last
-          month. Increment compares this month against the previous month for
-          that same set, so new merchants cannot inflate it.
+          Same store = Existing merchants that also ordered in the same days
+          of last month. This month so far is compared with the same days of
+          last month (e.g. 1–26 Sep vs 1–26 Aug), so a part-month is never
+          measured against a full month and new merchants cannot inflate it.
         </p>
         <div className="kpi-grid">
           <Kpi big label="Increment Achievement %" value={percent(inc.achievement_pct)}
@@ -249,7 +256,7 @@ export default function Home({ user, scope }) {
                  : `growth ${percent(inc.growth_pct)} vs target ${percent(inc.target_pct)}`} />
           <Kpi label="Increment Order" value={int(inc.increment_order)}
                tone={inc.increment_order < 0 ? "red" : "green"}
-               hint={`${int(inc.curr_orders)} vs ${int(inc.base_orders)} last month`} />
+               hint={`${int(inc.curr_orders)} vs ${int(inc.base_orders)} same days last month`} />
           <Kpi label="Increment Revenue" value={money(inc.increment_revenue)}
                tone={inc.increment_revenue < 0 ? "red" : "green"} />
           <Kpi label="Total Order (KAM merchants)" value={int(inc.total_orders)} />
@@ -261,8 +268,8 @@ export default function Home({ user, scope }) {
       <div className="panel">
         <h2>Same Store Retention</h2>
         <p className="sub">
-          Retention = merchants that ordered last month and ordered again this
-          month, as a share of last month's ordering base.
+          Retention = merchants that ordered in the same days of last month
+          and have ordered again this month so far, as a share of that base.
         </p>
         <div className="kpi-grid">
           <Kpi big label="Retention Achievement %" value={percent(ret.achievement_pct)}

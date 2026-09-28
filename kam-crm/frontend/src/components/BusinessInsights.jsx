@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, getToken, scopeQuery } from "../api.js";
+import { matchesMerchant } from "../validate.js";
 import EChart from "./EChart.jsx";
 
 const int = (v) => Number(v ?? 0).toLocaleString("en-US");
@@ -394,8 +395,19 @@ export default function BusinessInsights({ scope }) {
   const [crStage, setCrStage] = useState("ip"); // pending | ip | term
   const [range, setRange] = useState({ from: "", to: "" });
   const [businessId, setBusinessId] = useState("");
+  const [merchantSearch, setMerchantSearch] = useState("");
 
   const scopeQs = scopeQuery(scope);
+
+  // The search box narrows the Merchant dropdown by Business ID or name; the
+  // selected merchant stays listed even when it no longer matches.
+  const merchantOptions = useMemo(() => {
+    const list = meta?.merchants || [];
+    if (!merchantSearch.trim()) return list;
+    return list.filter(
+      (m) => matchesMerchant(m, merchantSearch) || String(m.business_id) === businessId
+    );
+  }, [meta, merchantSearch, businessId]);
 
   useEffect(() => {
     api(`/api/insights/meta${scopeQs ? `?${scopeQs}` : ""}`)
@@ -492,12 +504,21 @@ export default function BusinessInsights({ scope }) {
           <label>To <input type="date" value={range.to} min={meta.date_min}
                            max={meta.date_max}
                            onChange={(e) => setRange({ ...range, to: e.target.value })} /></label>
+          <input className="search" type="search" value={merchantSearch}
+                 onChange={(e) => setMerchantSearch(e.target.value)}
+                 placeholder="Search Business ID or Name" />
           <label>
             Merchant{" "}
             <select value={businessId} onChange={(e) => setBusinessId(e.target.value)}>
-              <option value="">All merchants</option>
-              {meta.merchants.map((m) => (
-                <option key={m.business_id} value={m.business_id}>{m.business_name}</option>
+              <option value="">
+                {merchantSearch.trim()
+                  ? `All merchants (${merchantOptions.length} match)`
+                  : "All merchants"}
+              </option>
+              {merchantOptions.map((m) => (
+                <option key={m.business_id} value={m.business_id}>
+                  {m.business_id} · {m.business_name}
+                </option>
               ))}
             </select>
           </label>

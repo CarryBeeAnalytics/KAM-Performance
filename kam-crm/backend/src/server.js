@@ -244,6 +244,47 @@ async function resolveTargets(reportMonth, { kam, lead }) {
   };
 }
 
+/**
+ * New Sales target for a multi-KAM view: every KAM's own target resolved
+ * kam -> their lead -> global, then added up. "No KAM" has no owner and
+ * therefore no target of its own, so it is left out of the sum.
+ */
+const NO_KAM = "no kam";
+
+async function sumKamTargetRevenue(reportMonth, kams) {
+  const [{ rows }, directory] = await Promise.all([
+    query(
+      `SELECT scope_type, scope_value, target_revenue FROM kam_targets
+       WHERE report_month = $1 AND target_revenue IS NOT NULL`,
+      [reportMonth]
+    ),
+    loadDirectory(),
+  ]);
+  const byKey = new Map(rows.map((row) => [`${row.scope_type}:${normalize(row.scope_value)}`, row]));
+  const leadOf = new Map(directory.map((row) => [normalize(row.kam_name), row.lead_name]));
+  const globalTarget = byKey.get("global:")?.target_revenue ?? null;
+
+  let total = 0;
+  let counted = 0;
+  const sources = { kam: 0, lead: 0, global: 0 };
+  for (const kam of kams) {
+    const key = normalize(kam);
+    if (key === NO_KAM) continue;
+    const kamTarget = byKey.get(`kam:${key}`)?.target_revenue;
+    const leadTarget = byKey.get(`lead:${normalize(leadOf.get(key) || "")}`)?.target_revenue;
+    const value = kamTarget ?? leadTarget ?? globalTarget;
+    if (value === null || value === undefined) continue;
+    sources[kamTarget != null ? "kam" : leadTarget != null ? "lead" : "global"] += 1;
+    total += num(value);
+    counted += 1;
+  }
+  if (!counted) return { total: null, label: "none" };
+  const parts = Object.entries(sources)
+    .filter(([, n]) => n)
+    .map(([level, n]) => `${n} ${level}`);
+  return { total, label: `sum of ${counted} KAM targets (${parts.join(", ")})` };
+}
+
 app.get("/api/targets", authRequired, async (req, res) => {
   try {
     const month = String(req.query.month || currentMonthStart()).slice(0, 10);
@@ -482,44 +523,54 @@ app.get("/api/home", authRequired, async (req, res) => {
       scope.params
     );
 
+    // New Sales / Same Store figures come from the KAMP job's per-merchant
+    // fields on kam_daily_report: merchant_type (New Onboard / Churn Win /
+    // Existing / Inactive, 16th-of-month carry-over) and month-to-date orders
+    // and revenue for this month and the same days of the previous month, so
+    // a part-month is never compared with a whole month. Activity, weekly
+    // orders and discount still come from kam_merchant_month.
     const monthResult = await query(
       `SELECT
          COUNT(*)::int AS merchants,
-         COUNT(*) FILTER (WHERE d.is_active_30d)::int        AS active_merchant,
-         COUNT(*) FILTER (WHERE NOT d.is_active_30d)::int    AS inactive_merchant,
-         COUNT(*) FILTER (WHERE d.classification = 'New Onboard')::int AS new_onboard,
-         COUNT(*) FILTER (WHERE d.classification = 'Churn Win')::int   AS churn_win,
-         COALESCE(SUM(d.orders_month), 0)::bigint      AS orders_month,
-         COALESCE(SUM(d.orders_prev_month), 0)::bigint AS orders_prev_month,
-         COALESCE(SUM(d.orders_last_week), 0)::bigint  AS orders_last_week,
-         COALESCE(SUM(d.revenue_month), 0)             AS revenue_month,
-         COALESCE(SUM(d.revenue_month) FILTER (
-             WHERE d.classification IN ('New Onboard', 'Churn Win')), 0) AS new_sales_revenue,
-         COALESCE(SUM(d.orders_month) FILTER (
-             WHERE d.classification = 'Existing' AND d.orders_prev_month > 0), 0)::bigint
+         COUNT(*) FILTER (WHERE mm.is_active_30d)::int                    AS active_merchant,
+         COUNT(*) FILTER (WHERE NOT COALESCE(mm.is_active_30d, false))::int AS inactive_merchant,
+         COUNT(*) FILTER (WHERE d.merchant_type = 'New Onboard')::int AS new_onboard,
+         COUNT(*) FILTER (WHERE d.merchant_type = 'Churn Win')::int   AS churn_win,
+         COALESCE(SUM(mm.orders_month), 0)::bigint      AS orders_month,
+         COALESCE(SUM(mm.orders_prev_month), 0)::bigint AS orders_prev_month,
+         COALESCE(SUM(mm.orders_last_week), 0)::bigint  AS orders_last_week,
+         COALESCE(SUM(d.mtd_orders), 0)::bigint         AS mtd_orders,
+         COALESCE(SUM(d.mtd_revenue), 0)                AS revenue_month,
+         COALESCE(SUM(d.mtd_revenue) FILTER (
+             WHERE d.merchant_type IN ('New Onboard', 'Churn Win')), 0) AS new_sales_revenue,
+         COALESCE(SUM(d.mtd_orders) FILTER (
+             WHERE d.merchant_type = 'Existing' AND d.prev_mtd_orders > 0), 0)::bigint
              AS ss_curr_orders,
-         COALESCE(SUM(d.orders_prev_month) FILTER (
-             WHERE d.classification = 'Existing' AND d.orders_prev_month > 0), 0)::bigint
+         COALESCE(SUM(d.prev_mtd_orders) FILTER (
+             WHERE d.merchant_type = 'Existing' AND d.prev_mtd_orders > 0), 0)::bigint
              AS ss_prev_orders,
-         COALESCE(SUM(d.revenue_month) FILTER (
-             WHERE d.classification = 'Existing' AND d.orders_prev_month > 0), 0)
+         COALESCE(SUM(d.mtd_revenue) FILTER (
+             WHERE d.merchant_type = 'Existing' AND d.prev_mtd_orders > 0), 0)
              AS ss_curr_revenue,
-         COALESCE(SUM(d.revenue_prev_month) FILTER (
-             WHERE d.classification = 'Existing' AND d.orders_prev_month > 0), 0)
+         COALESCE(SUM(d.prev_mtd_revenue) FILTER (
+             WHERE d.merchant_type = 'Existing' AND d.prev_mtd_orders > 0), 0)
              AS ss_prev_revenue,
-         COUNT(*) FILTER (WHERE d.orders_prev_month > 0)::int AS base_merchants,
-         COUNT(*) FILTER (WHERE d.orders_prev_month > 0 AND d.orders_month > 0)::int
+         COUNT(*) FILTER (WHERE d.prev_mtd_orders > 0)::int AS base_merchants,
+         COUNT(*) FILTER (WHERE d.prev_mtd_orders > 0 AND d.mtd_orders > 0)::int
              AS retained_merchants,
-         COALESCE(SUM(d.orders_month) FILTER (
-             WHERE d.orders_prev_month > 0 AND d.orders_month > 0), 0)::bigint
+         COALESCE(SUM(d.mtd_orders) FILTER (
+             WHERE d.prev_mtd_orders > 0 AND d.mtd_orders > 0), 0)::bigint
              AS retention_orders,
-         COALESCE(SUM(d.revenue_month) FILTER (
-             WHERE d.orders_prev_month > 0 AND d.orders_month > 0), 0)
+         COALESCE(SUM(d.mtd_revenue) FILTER (
+             WHERE d.prev_mtd_orders > 0 AND d.mtd_orders > 0), 0)
              AS retention_revenue,
-         COALESCE(SUM(d.discount_month), 0)  AS discount_month,
-         COALESCE(SUM(d.gross_fee_month), 0) AS gross_fee_month
-       FROM kam_merchant_month d
-       WHERE d.report_month = $${scope.params.length + 1} AND ${scope.where}`,
+         COALESCE(SUM(mm.discount_month), 0)  AS discount_month,
+         COALESCE(SUM(mm.gross_fee_month), 0) AS gross_fee_month
+       FROM kam_daily_report d
+       LEFT JOIN kam_merchant_month mm
+              ON mm.business_id = d.business_id
+             AND mm.report_month = $${scope.params.length + 1}
+       WHERE ${scope.where}`,
       [...scope.params, month]
     );
 
@@ -585,6 +636,13 @@ app.get("/api/home", authRequired, async (req, res) => {
     const leadForTargets =
       req.user.role === "lead" ? req.user.kam_name : String(req.query.lead || "").trim();
     const targets = await resolveTargets(month, { kam: singleKam, lead: leadForTargets });
+    if (!singleKam) {
+      // A view with several KAMs (All / Team / Lead) is measured against the
+      // sum of its KAMs' own New Sales targets.
+      const summed = await sumKamTargetRevenue(month, scope.kams);
+      targets.target_revenue = summed.total;
+      targets.resolved_from = summed.label;
+    }
 
     const achievementRevenue = num(m.new_sales_revenue);
     const achievementPct = pct(achievementRevenue, targets.target_revenue);
@@ -645,7 +703,7 @@ app.get("/api/home", authRequired, async (req, res) => {
           growthPct === null || !targets.incremental_target_pct
             ? null
             : (growthPct / num(targets.incremental_target_pct)) * 100,
-        total_orders: num(m.orders_month),
+        total_orders: num(m.mtd_orders),
         total_revenue: num(m.revenue_month),
       },
       retention: {
