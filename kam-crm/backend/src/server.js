@@ -489,7 +489,9 @@ app.put("/api/targets/bulk", authRequired, async (req, res) => {
 //   Total Alerts / Worked /  from kam_flag_log, latest reporting day only
 //   Not Worked               (order_drop, call_followup, visit; issue never
 //                            raises a flag)
-//   Carried Over             flags from earlier days still Not Worked
+//   Carried Over             today's flags on merchants that still have an
+//                            unworked flag from any earlier day (a subset
+//                            of Total Alerts)
 //   Call Tracker Alerts      merchants owing a call in the current BD week
 //
 //   NEW SALES
@@ -577,19 +579,28 @@ app.get("/api/home", authRequired, async (req, res) => {
     // Flags: today's counts only, plus everything still pending from earlier
     // reporting days (carried over). "Today" is the latest reporting day.
     await syncFlagLog();
+    // Carried over is a PART of today's flags: a flag raised today on a
+    // merchant that still has an unworked flag from any earlier day.
     const alertsResult = await query(
-      `WITH today AS (SELECT MAX(reporting_date) AS d FROM kam_daily_report)
-       SELECT COUNT(*) FILTER (WHERE f.reporting_date = t.d)::int AS total_alerts,
-              COUNT(*) FILTER (WHERE f.reporting_date = t.d
-                                 AND f.status <> 'Not Worked')::int AS worked,
-              COUNT(*) FILTER (WHERE f.reporting_date = t.d
-                                 AND f.status = 'Not Worked')::int AS not_worked,
-              COUNT(*) FILTER (WHERE f.reporting_date < t.d
-                                 AND f.status = 'Not Worked')::int AS carried_over,
-              COUNT(DISTINCT f.business_id) FILTER (WHERE f.reporting_date < t.d
-                                 AND f.status = 'Not Worked')::int AS carried_over_merchants
-       FROM kam_flag_log f CROSS JOIN today t
-       WHERE lower(btrim(f.kam_name)) = ANY($1::text[])`,
+      `WITH today AS (SELECT MAX(reporting_date) AS d FROM kam_daily_report),
+       todays AS (
+         SELECT f.business_id, f.status,
+                EXISTS (
+                  SELECT 1 FROM kam_flag_log p
+                  WHERE p.business_id = f.business_id
+                    AND p.reporting_date < f.reporting_date
+                    AND p.status = 'Not Worked'
+                ) AS carried
+         FROM kam_flag_log f CROSS JOIN today t
+         WHERE f.reporting_date = t.d
+           AND lower(btrim(f.kam_name)) = ANY($1::text[])
+       )
+       SELECT COUNT(*)::int AS total_alerts,
+              COUNT(*) FILTER (WHERE status <> 'Not Worked')::int AS worked,
+              COUNT(*) FILTER (WHERE status = 'Not Worked')::int AS not_worked,
+              COUNT(*) FILTER (WHERE carried)::int AS carried_over,
+              COUNT(DISTINCT business_id) FILTER (WHERE carried)::int AS carried_over_merchants
+       FROM todays`,
       scope.params
     );
 

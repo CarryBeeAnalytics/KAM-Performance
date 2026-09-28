@@ -182,7 +182,7 @@ export default function Home({ user, scope }) {
         <Kpi label="Not Worked On (Today)" value={int(c.not_worked_on)} tone="red"
              hint="today's flags still pending" />
         <Kpi label="Carried Over Flags" value={int(c.carried_over)} tone="red"
-             hint={`not worked before today · ${int(c.carried_over_merchants)} merchants`} />
+             hint={`of today's ${int(c.total_alerts)} flags, still unworked from earlier days · ${int(c.total_alerts - c.carried_over)} new today`} />
         <Kpi label="Call Tracker Alerts" value={int(c.call_tracker_alerts)} tone="dark"
              hint={`${int(c.call_tracker_not_worked)} still pending this week`} />
       </div>

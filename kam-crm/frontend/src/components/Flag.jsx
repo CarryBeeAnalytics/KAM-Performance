@@ -62,8 +62,8 @@ function FlagTable({ rows, loading, onOpen }) {
                 {row.business_name}
                 {row.carried_over > 0 && (
                   <span className="pill warn" style={{ marginLeft: 6 }}
-                        title="Flags from earlier days that were not worked">
-                    {row.carried_over} carried over
+                        title={`${row.carried_over} unworked flag(s) from earlier days`}>
+                    Carried over
                   </span>
                 )}
               </td>
