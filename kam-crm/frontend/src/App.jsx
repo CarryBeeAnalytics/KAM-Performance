@@ -6,12 +6,14 @@ import Home from "./components/Home.jsx";
 import Flag from "./components/Flag.jsx";
 import MerchantPerformance from "./components/MerchantPerformance.jsx";
 import BusinessInsights from "./components/BusinessInsights.jsx";
+import MonthlyReport from "./components/MonthlyReport.jsx";
 
 const TITLES = {
   home: "Home",
   flag: "Flag",
   merchant: "Merchant Performance",
   insights: "Business Insights",
+  monthly: "Monthly Report",
 };
 
 export default function App() {
@@ -89,6 +91,7 @@ export default function App() {
           )}
           {tab === "merchant" && <MerchantPerformance user={user} scope={scope} />}
           {tab === "insights" && <BusinessInsights user={user} scope={scope} />}
+          {tab === "monthly" && <MonthlyReport user={user} scope={scope} />}
         </main>
       </div>
     </div>

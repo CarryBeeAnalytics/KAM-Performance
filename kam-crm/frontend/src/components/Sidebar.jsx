@@ -6,6 +6,7 @@ const NAV = [
   { id: "flag", label: "Flag", ico: "⚑" },
   { id: "merchant", label: "Merchant Performance", ico: "▦" },
   { id: "insights", label: "Business Insights", ico: "◎" },
+  { id: "monthly", label: "Monthly Report", ico: "▤" },
 ];
 
 /**

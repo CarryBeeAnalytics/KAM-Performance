@@ -1181,6 +1181,51 @@ app.get("/api/alerts/count", authRequired, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// MONTHLY REPORT
+// Stored month-by-month results from kam_monthly_performance (one row per
+// KAM per month, written by KAMP through snapshot_kam_monthly_performance).
+// Rows hold raw sums only; the tab derives every percentage so Team / Lead
+// totals are exact sums of their KAMs.
+// ---------------------------------------------------------------------------
+app.get("/api/monthly-report/months", authRequired, async (req, res) => {
+  try {
+    const scope = await resolveScope(req, "p");
+    if (scope.error) return res.status(scope.status).json({ error: scope.error });
+    const { rows } = await query(
+      `SELECT DISTINCT p.report_month::text AS m FROM kam_monthly_performance p
+       WHERE ${scope.where} ORDER BY m DESC`,
+      scope.params
+    );
+    res.json({ months: rows.map((row) => row.m) });
+  } catch (err) {
+    console.error("monthly-report months:", err);
+    res.status(500).json({ error: "Could not load the report months." });
+  }
+});
+
+app.get("/api/monthly-report", authRequired, async (req, res) => {
+  try {
+    const month = String(req.query.month || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-01$/.test(month)) {
+      return res.status(400).json({ error: "month must be the first day of a month." });
+    }
+    const scope = await resolveScope(req, "p", 2);
+    if (scope.error) return res.status(scope.status).json({ error: scope.error });
+    const { rows } = await query(
+      `SELECT p.*, p.report_month::text AS report_month, p.through_date::text AS through_date
+       FROM kam_monthly_performance p
+       WHERE p.report_month = $1 AND ${scope.where}
+       ORDER BY p.team_name, p.lead_name, p.kam_name`,
+      [month, ...scope.params]
+    );
+    res.json({ month, rows });
+  } catch (err) {
+    console.error("monthly-report:", err);
+    res.status(500).json({ error: "Could not load the monthly report." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // MERCHANT PERFORMANCE
 // Lifetime table (now carrying Max Order in a Day and Potentiality) plus the
 // DOD order-count grid, unchanged in shape from v2.
