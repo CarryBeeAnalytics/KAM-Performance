@@ -1179,9 +1179,13 @@ app.get("/api/alerts/count", authRequired, async (req, res) => {
     const scope = await resolveScope(req, "f");
     if (scope.error) return res.status(scope.status).json({ error: scope.error });
     await syncFlagLog();
+    // Same number as Home's "Not Worked On (Today)": today's flags still
+    // waiting. Older pending flags are already inside it as carried over.
     const { rows } = await query(
       `SELECT COUNT(*)::int AS pending FROM kam_flag_log f
-       WHERE f.status = 'Not Worked' AND ${scope.where}`,
+       WHERE f.status = 'Not Worked'
+         AND f.reporting_date = (SELECT MAX(reporting_date) FROM kam_daily_report)
+         AND ${scope.where}`,
       scope.params
     );
     res.json({ pending: rows[0].pending });
